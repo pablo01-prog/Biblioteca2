@@ -4,64 +4,80 @@ import os
 import re
 import easyocr
 import numpy as np
-import speech_recognition as sr
+import whisper # Reemplazamos speech_recognition por Whisper
+import tempfile # Necesario para procesar el audio temporalmente
 from PIL import Image
 from dotenv import load_dotenv
 import google.generativeai as genai
 
 # --- 1. CONFIGURACIÓN DE SEGURIDAD Y RECURSOS ---
+# Cargamos las variables de entorno (tu API key de Gemini)
 load_dotenv()
 api_key = os.getenv("API_KEY")
 
+# Validación de seguridad: detener la app si no hay clave
 if not api_key:
     st.error("Error: No se encontró la API_KEY en el archivo .env")
     st.stop()
 
+# Configuración de Gemini
 genai.configure(api_key=api_key)
-# Instanciamos el modelo una sola vez para mayor eficiencia
 model_gemini = genai.GenerativeModel('gemini-1.5-flash')
 
+# Usamos st.cache_resource para cargar los modelos pesados solo una vez.
+# Esto evita que Streamlit los recargue cada vez que el usuario hace un clic.
 @st.cache_resource
 def cargar_recursos():
-    # Asegúrate de que 'modelo_libros.pkl' esté en la misma carpeta
+    # 1. Cargar el modelo de Machine Learning (Scikit-Learn)
     try:
-        modelo = joblib.load('modelo_libros.pkl')
-    except:
-        modelo = None
-    lector_ocr = easyocr.Reader(['es'], gpu=False) # gpu=False por si no tienes CUDA
-    return modelo, lector_ocr
+        modelo_ml = joblib.load('modelo_libros.pkl')
+    except Exception as e:
+        modelo_ml = None
+        
+    # 2. Cargar el modelo OCR (EasyOCR)
+    lector_ocr = easyocr.Reader(['es'], gpu=False) 
+    
+    # 3. Cargar el modelo de Transcripción (Whisper - Modelo 'base' para que sea rápido)
+    modelo_audio = whisper.load_model("base")
+    
+    return modelo_ml, lector_ocr, modelo_audio
 
-modelo_local, reader = cargar_recursos()
+# Instanciamos los recursos
+modelo_local, reader, whisper_model = cargar_recursos()
 
+# Advertencia si falta el modelo local
 if modelo_local is None:
-    st.error("No se pudo cargar 'modelo_libros.pkl'. Revisa que el archivo exista.")
+    st.warning("⚠️ No se pudo cargar 'modelo_libros.pkl'. Asegúrate de subirlo a tu repositorio de GitHub.")
 
 # --- 2. FUNCIONES DE APOYO ---
 def es_entrada_valida(texto):
-    """Valida que el texto no esté vacío y contenga letras."""
+    """Valida que el texto no esté vacío y contenga letras para evitar errores en la API."""
     if not texto or len(texto.strip()) < 3:
-        return False, "La entrada es demasiado corta."
+        return False, "La entrada es demasiado corta. Escribe un poco más."
     if not re.search(r'[a-zA-ZáéíóúÁÉÍÓÚñÑ]', texto):
-        return False, "Entrada no válida: Por favor usa palabras, no solo números."
+        return False, "Entrada no válida: Por favor usa palabras, no solo números o símbolos."
     return True, ""
 
 def procesar_solicitud(texto_entrada):
-    """Clasifica con el modelo local y genera recomendaciones con Gemini."""
+    """Clasifica el texto con el modelo local y genera recomendaciones con Gemini."""
     valido, mensaje_error = es_entrada_valida(texto_entrada)
     if not valido:
         return None, mensaje_error
     
     # 1. Clasificación local (ML)
-    try:
-        categoria = modelo_local.predict([texto_entrada])[0]
-    except Exception as e:
-        categoria = "Desconocido"
+    categoria = "Desconocido"
+    if modelo_local is not None:
+        try:
+            categoria = modelo_local.predict([texto_entrada])[0]
+        except Exception as e:
+            categoria = "Error en predicción"
 
     # 2. Generación con Gemini
     prompt = (
-        f"El usuario busca libros basados en esto: '{texto_entrada}'. "
-        f"El sistema ha detectado el género: {categoria}. "
-        f"Recomienda 3 libros específicos con autor y una frase de por qué leerlos."
+        f"El usuario busca libros basados en esta descripción: '{texto_entrada}'. "
+        f"El sistema de Machine Learning ha detectado el género: {categoria}. "
+        f"Actúa como un bibliotecario experto y recomienda 3 libros específicos (con autor) "
+        f"que encajen perfectamente. Incluye una breve y atractiva frase de por qué leer cada uno."
     )
     
     try:
@@ -75,38 +91,43 @@ def procesar_solicitud(texto_entrada):
 
 # --- 3. INTERFAZ DE USUARIO (STREAMLIT) ---
 st.set_page_config(page_title="Biblioteca Inteligente", page_icon="📚", layout="centered")
-st.title("📚 Mi Biblioteca Virtual")
-st.markdown("Clasificación por IA local y recomendaciones con Gemini 1.5 Flash.")
+st.title("📚 Mi Biblioteca Virtual Inteligente")
+st.markdown("Clasificación mediante **Machine Learning local**, OCR, Whisper y recomendaciones de **Gemini 1.5 Flash**.")
 st.markdown("---")
 
-tab_txt, tab_img, tab_aud = st.tabs(["✍️ Texto", "📷 Imagen (OCR)", "🎙️ Audio"])
+# Creación de pestañas para las distintas funcionalidades
+tab_txt, tab_img, tab_aud = st.tabs(["✍️ Texto", "📷 Imagen (OCR)", "🎙️ Audio (Whisper)"])
 
-# --- PESTAÑA: TEXTO ---
+# --- PESTAÑA 1: TEXTO ---
 with tab_txt:
-    user_input = st.text_area("¿Qué te apetece leer hoy?", placeholder="Ej: Me gustan las historias de crímenes en Londres...")
-    if st.button("Analizar y Recomendar"):
-        with st.spinner("Procesando tu petición..."):
+    st.subheader("Búsqueda por descripción")
+    user_input = st.text_area("¿Qué te apetece leer hoy?", placeholder="Ej: Me gustan las historias de crímenes en la época victoriana...")
+    
+    if st.button("Analizar y Recomendar", key="btn_texto"):
+        with st.spinner("Analizando tu petición..."):
             cat, resultado = procesar_solicitud(user_input)
             if cat:
-                st.success(f"Género sugerido: **{cat}**")
+                st.success(f"🎭 Género detectado por el modelo: **{cat}**")
                 st.markdown(resultado)
             else:
                 st.warning(resultado)
 
-# --- PESTAÑA: IMAGEN ---
+# --- PESTAÑA 2: IMAGEN (OCR) ---
 with tab_img:
-    st.subheader("Extraer texto de una imagen")
-    archivo_img = st.file_uploader("Sube una foto de una sinopsis o título", type=['jpg', 'jpeg', 'png'])
+    st.subheader("Extraer texto de una contraportada o sinopsis")
+    archivo_img = st.file_uploader("Sube una foto", type=['jpg', 'jpeg', 'png'])
     
     if archivo_img:
-        # Convertir imagen para mostrarla y para procesarla
+        # Mostrar la imagen
         img_pil = Image.open(archivo_img)
-        img_array = np.array(img_pil) # Vital para que EasyOCR no falle
         st.image(img_pil, caption="Imagen cargada", use_container_width=True)
+        # Convertir a numpy array para EasyOCR
+        img_array = np.array(img_pil) 
         
-        if st.button("Escanear Imagen"):
-            with st.spinner("Leyendo texto..."):
+        if st.button("Escanear Imagen y Recomendar", key="btn_img"):
+            with st.spinner("Leyendo texto de la imagen..."):
                 try:
+                    # detail=0 devuelve solo una lista de textos
                     resultado_ocr = reader.readtext(img_array, detail=0)
                     texto_extraido = " ".join(resultado_ocr)
                     
@@ -114,37 +135,48 @@ with tab_img:
                         st.info(f"**Texto detectado:** {texto_extraido}")
                         cat, resultado = procesar_solicitud(texto_extraido)
                         if cat:
-                            st.success(f"Género detectado: **{cat}**")
+                            st.success(f"🎭 Género detectado: **{cat}**")
                             st.markdown(resultado)
                     else:
                         st.error("No se detectó texto legible en la imagen.")
                 except Exception as e:
-                    st.error(f"Error en OCR: {e}")
+                    st.error(f"Error en el procesamiento OCR: {e}")
 
-# --- PESTAÑA: AUDIO ---
+# --- PESTAÑA 3: AUDIO (WHISPER) ---
 with tab_aud:
     st.subheader("Recomendación por voz")
-    archivo_audio = st.file_uploader("Sube un archivo .wav", type=['wav'])
+    archivo_audio = st.file_uploader("Sube un archivo de audio (.wav, .mp3)", type=['wav', 'mp3', 'm4a'])
     
     if archivo_audio:
-        if st.button("Transcribir y Analizar"):
-            r = sr.Recognizer()
-            with sr.AudioFile(archivo_audio) as source:
-                audio_data = r.record(source)
+        st.audio(archivo_audio)
+        if st.button("Transcribir y Analizar", key="btn_aud"):
+            with st.spinner("Transcribiendo el audio con Whisper..."):
+                # Whisper requiere un archivo físico en disco, así que creamos uno temporal
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_audio:
+                    tmp_audio.write(archivo_audio.read())
+                    tmp_audio_path = tmp_audio.name
+                
                 try:
-                    texto_voz = r.recognize_google(audio_data, language="es-ES")
-                    st.write(f"**Te he escuchado:** {texto_voz}")
+                    # Transcribir usando el modelo cargado en caché
+                    resultado_whisper = whisper_model.transcribe(tmp_audio_path, language="es")
+                    texto_voz = resultado_whisper["text"]
+                    
+                    st.info(f"**Transcripción:** {texto_voz}")
+                    
+                    # Pasar el texto transcrito al pipeline de ML + Gemini
                     cat, resultado = procesar_solicitud(texto_voz)
                     if cat:
-                        st.success(f"Género: {cat}")
+                        st.success(f"🎭 Género detectado: **{cat}**")
                         st.markdown(resultado)
-                except sr.UnknownValueError:
-                    st.error("No pude entender el audio.")
-                except sr.RequestError:
-                    st.error("Error con el servicio de reconocimiento de voz.")
+                        
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(f"Error al procesar el audio: {e}")
+                finally:
+                    # Limpieza: eliminar el archivo temporal del servidor
+                    if os.path.exists(tmp_audio_path):
+                        os.remove(tmp_audio_path)
 
 st.markdown("---")
-st.caption("Proyecto con Streamlit + Scikit-Learn + Gemini API")
+st.caption("Desarrollado con ❤️ usando Streamlit, Scikit-Learn, Whisper, EasyOCR y Gemini API")
+
 
