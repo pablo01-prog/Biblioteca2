@@ -1,19 +1,9 @@
-# Interfaz y Web
 streamlit
-
-# Procesamiento de Datos y ML
-pandas
-scikit-learn
 joblib
-
-# Inteligencia Artificial y Variables de Entorno
+scikit-learn
+easyocr
+numpy
+Pillow
 python-dotenv
 google-generativeai
-
-# Visión Artificial (OCR)
-easyocr
-Pillow
-
-# Procesamiento de Voz (Audio)
-SpeechRecognition
-pydub
+openai-whisper
